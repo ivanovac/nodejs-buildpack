@@ -74,6 +74,14 @@ dependencies:
   source: https://nodejs.org/dist/v20.19.5/node-v20.19.5.tar.gz
   source_sha256: b34d3f57666d91deb6a148b604d7f2f4051d540087e9f6c627dedc1fcb866d5a
 - name: node
+  version: 20.20.0
+  uri: https://github.com/ivanovac/nodejs-buildpack/releases/download/v1.9.0-beta-cflinuxfs5/node_20.20.0_linux_x64_cflinuxfs5.tgz
+  sha256: 476f77345d678592b236abca5496a3e4b0986abbffa61c3260c7d4e68de3ddf8
+  cf_stacks:
+  - cflinuxfs5
+  source: https://nodejs.org/dist/v20.20.0/node-v20.20.0.tar.gz
+  source_sha256: eb5e598c69c8e14e5e49f2a5e5c83bca6fc2293f5af25b4e96cd7f1ee18b13ba
+- name: node
   version: 22.20.0
   uri: https://buildpacks.cloudfoundry.org/dependencies/node/node_22.20.0_linux_x64_cflinuxfs4_088bdfa6.tgz
   sha256: '088bdfa6d4be820000d38a3b8358ffb24a778f14ead80d646fc568df81460f8d'
@@ -90,6 +98,14 @@ dependencies:
   source: https://nodejs.org/dist/v22.21.1/node-v22.21.1.tar.gz
   source_sha256: 5407ff154708e3dd6c9eb40f787b79afc5db8b2461e4ae92ee54605515bba0f1
 - name: node
+  version: 22.22.0
+  uri: https://github.com/ivanovac/nodejs-buildpack/releases/download/v1.9.0-beta-cflinuxfs5/node_22.22.0_linux_x64_cflinuxfs5.tgz
+  sha256: b97f271c8dccbe03ee40a11f13a5422ec985ee97cda5ade6563d172105099ea2
+  cf_stacks:
+  - cflinuxfs5
+  source: https://nodejs.org/dist/v22.22.0/node-v22.22.0.tar.gz
+  source_sha256: 1e7e80e7d4a3a6a3fbbcf5eda069e6cee18ccb09ab2ddc7bbbaada0b79023dfc
+- name: node
   version: 24.3.0
   uri: https://buildpacks.cloudfoundry.org/dependencies/node/node_24.3.0_linux_x64_cflinuxfs4_b6ec3828.tgz
   sha256: b6ec38289081a8514d5ebb9764140ece14d3636238381bf202f6e33f2c4f954c
@@ -105,6 +121,14 @@ dependencies:
   - cflinuxfs4
   source: https://github.com/nodejs/node/archive/v24.10.0.tar.gz
   source_sha256: e549f1e3d6f2ba0ced319a11624cdfe31a0ac35f9e1abf6f80c1d86cf5d86f51
+- name: node
+  version: 24.13.0
+  uri: https://github.com/ivanovac/nodejs-buildpack/releases/download/v1.9.0-beta-cflinuxfs5/node_24.13.0_linux_x64_cflinuxfs5.tgz
+  sha256: 298e96ffac7c3aab6d85f510b4d3782cf4c986aebbb6eac965ee3db6e536830f
+  cf_stacks:
+  - cflinuxfs5
+  source: https://nodejs.org/dist/v24.13.0/node-v24.13.0.tar.gz
+  source_sha256: 5cbfbd3af87e9cec8a80baea49fce46f42e3a5070338a2e18b0fc8aecfb5e77e
 - name: python
   version: 3.11.14
   uri: https://buildpacks.cloudfoundry.org/dependencies/python/python_3.11.14_linux_x64_cflinuxfs3_6d5446f5.tgz
@@ -128,6 +152,14 @@ dependencies:
   cf_stacks:
   - cflinuxfs4
   - cflinuxfs3
+  source: https://github.com/yarnpkg/yarn/releases/download/v1.22.22/yarn-v1.22.22.tar.gz
+  source_sha256: 88268464199d1611fcf73ce9c0a6c4d44c7d5363682720d8506f6508addf36a0
+- name: yarn
+  version: 1.22.22
+  uri: https://github.com/ivanovac/nodejs-buildpack/releases/download/v1.9.0-beta-cflinuxfs5/yarn_1.22.22_linux_x64_cflinuxfs5.tgz
+  sha256: dba1d118a43e0ff0dfbd4c80e0c23d39ace93599faab378c6ce5e72964067625
+  cf_stacks:
+  - cflinuxfs5
   source: https://github.com/yarnpkg/yarn/releases/download/v1.22.22/yarn-v1.22.22.tar.gz
   source_sha256: 88268464199d1611fcf73ce9c0a6c4d44c7d5363682720d8506f6508addf36a0
 pre_package: scripts/build.sh
