@@ -83,8 +83,8 @@ type Supplier struct {
 }
 
 var LTS = map[string]int{
-	"gallium":  16,
-	"hydrogen": 18,
+	"iron": 20,
+	"jod":  22,
 }
 
 func Run(s *Supplier) error {
@@ -727,7 +727,7 @@ func (s *Supplier) InstallNode() error {
 }
 
 func nodeVersionRequiresSSLEnvVars(version string) (bool, error) {
-	// NOTE: ensures OpenSSL CA store works with Node v18 and higher. Waiting
+	// NOTE: ensures OpenSSL CA store works with Node v20 and higher. Waiting
 	// for resolution on https://github.com/nodejs/node/issues/43560 to decide
 	// how to properly fix this.
 
@@ -736,12 +736,12 @@ func nodeVersionRequiresSSLEnvVars(version string) (bool, error) {
 		return false, err
 	}
 
-	return nodeVersion.Major() >= 18, nil
+	return nodeVersion.Major() >= 20, nil
 }
 
 func (s *Supplier) InstallNPM() error {
 	buffer := new(bytes.Buffer)
-	if err := s.Command.Execute(s.Stager.BuildDir(), buffer, buffer, "npm", "--version"); err != nil {
+	if err := s.Command.Execute(s.Stager.BuildDir(), buffer, buffer, "npm", "--version", "--loglevel", "notice"); err != nil {
 		s.Log.Error(strings.TrimSuffix(strings.TrimSpace(buffer.String()), "\n"))
 		return err
 	}
@@ -789,7 +789,7 @@ func (s *Supplier) InstallYarn() error {
 	}
 
 	buffer := new(bytes.Buffer)
-	if err := s.Command.Execute(s.Stager.BuildDir(), buffer, buffer, "yarn", "--version"); err != nil {
+	if err := s.Command.Execute(s.Stager.BuildDir(), buffer, buffer, "yarn", "--version", "--loglevel", "notice"); err != nil {
 		return err
 	}
 

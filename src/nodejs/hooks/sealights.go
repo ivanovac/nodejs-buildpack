@@ -2,8 +2,11 @@ package hooks
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,34 +16,76 @@ import (
 )
 
 const EmptyTokenError = "token cannot be empty (env SL_TOKEN | SL_TOKEN_FILE)"
-const CommandStringError = "Cannot find command begin term"
-const NpmCommandStringError = "NPM command without package.json file is not supported"
-const SealightsNotBoundError = "Sealights service not bound"
+const CommandStringError = "cannot find command begin term"
+const NpmCommandStringError = "nmp command without package.json file is not supported"
+const SealightsNotBoundError = "sealights service not bound"
 const EmptyBuildError = "build session id cannot be empty (env SL_BUILD_SESSION_ID | SL_BUILD_SESSION_ID_FILE)"
 const Procfile = "Procfile"
 const PackageJsonFile = "package.json"
 const ManifestFile = "manifest.yml"
+const DefaultVersion = "latest"
+const DefaultPackage = "slnodejs"
+const AgentPackageVersionFormat = "%s@%s"
+const AgentRecommendedVersionUrlFormat = "https://%s.sealights.co/api/v2/agents/slnodejs/recommended"
 
 type Command interface {
 	Execute(dir string, stdout io.Writer, stderr io.Writer, program string, args ...string) error
 }
 
-type SealightsHook struct {
-	libbuildpack.DefaultHook
-	Log     *libbuildpack.Logger
-	Command Command
+// HTTPClient interface represents the basic HTTP client operations.
+type HttpClient interface {
+	Get(url string) (*http.Response, error)
 }
 
-type SealightsOptions struct {
-	Token       string
-	TokenFile   string
-	BsId        string
-	BsIdFile    string
-	Proxy       string
-	LabId       string
-	ProjectRoot string
-	TestStage   string
-	App         string
+type SealightsHook struct {
+	libbuildpack.DefaultHook
+	Log        *libbuildpack.Logger
+	Command    Command
+	HttpClient HttpClient
+
+	parameters  *SealightsParameters
+	initialized bool
+}
+
+type SealightsParameters struct {
+	Token              string
+	TokenFile          string
+	BuildSessionId     string
+	BuildSessionIdFile string
+	LabId              string
+	CustomAgentUrl     string
+	Version            string
+	Proxy              string
+	ProxyUsername      string
+	ProxyPassword      string
+	ProjectRoot        string
+	TestStage          string
+	NpmRunScript       string
+}
+
+type SealightsRunOptions struct {
+	Token              string
+	TokenFile          string
+	BuildSessionId     string
+	BuildSessionIdFile string
+	Proxy              string
+	ProxyUsername      string
+	ProxyPassword      string
+	LabId              string
+	ProjectRoot        string
+	TestStage          string // depracated
+	App                string
+}
+
+type RecomendedVersionResponse struct {
+	Type  string       `json:"type"`
+	Agent AgentVersion `json:"agent"`
+}
+
+type AgentVersion struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Date    string `json:"date"`
 }
 
 type Manifest struct {
@@ -58,17 +103,26 @@ type PackageJson struct {
 func init() {
 	logger := libbuildpack.NewLogger(os.Stdout)
 	command := &libbuildpack.Command{}
-	libbuildpack.AddHook(&SealightsHook{
-		Log:     logger,
-		Command: command,
-	})
+	hook := NewSealightsHook(logger, command, nil)
+	libbuildpack.AddHook(hook)
+}
+
+func NewSealightsHook(logger *libbuildpack.Logger, command Command, httpClient HttpClient) *SealightsHook {
+	return &SealightsHook{
+		DefaultHook: libbuildpack.DefaultHook{},
+		Log:         logger,
+		Command:     command,
+		HttpClient:  httpClient,
+		parameters:  &SealightsParameters{},
+		initialized: false,
+	}
 }
 
 func (sl *SealightsHook) AfterCompile(stager *libbuildpack.Stager) error {
-	sl.Log.Info("inside Sealights hook")
+	sl.parseVcapServices()
 
 	if !sl.RunWithSealights() {
-		sl.Log.Info("service is not configured to run with Sealights")
+		sl.Log.Debug("service is not configured to run with Sealights")
 		return nil
 	}
 
@@ -80,6 +134,7 @@ func (sl *SealightsHook) AfterCompile(stager *libbuildpack.Stager) error {
 
 	err = sl.installAgent(stager)
 	if err != nil {
+		sl.Log.Error("error injecting Sealights: %s", err)
 		return err
 	}
 
@@ -87,8 +142,8 @@ func (sl *SealightsHook) AfterCompile(stager *libbuildpack.Stager) error {
 }
 
 func (sl *SealightsHook) RunWithSealights() bool {
-	isTokenFound, _, _ := sl.GetTokenFromEnvironment()
-	return isTokenFound
+	sl.parseVcapServices()
+	return sl.parameters.Token != "" || sl.parameters.TokenFile != ""
 }
 
 func (sl *SealightsHook) SetApplicationStartInProcfile(stager *libbuildpack.Stager) error {
@@ -101,13 +156,22 @@ func (sl *SealightsHook) SetApplicationStartInProcfile(stager *libbuildpack.Stag
 	originalStartCommand := string(bytes)
 	_, usePackageJson := sl.usePackageJson(originalStartCommand, stager)
 	if usePackageJson {
+		// Extract script name from command or use configured default
+		scriptName, err := sl.ExtractNpmRunScriptName(originalStartCommand)
+		if err != nil {
+			sl.Log.Warning("Failed to extract script name from command '%s', using configured default: %s", originalStartCommand, err)
+			scriptName = sl.parameters.NpmRunScript
+			if scriptName == "" {
+				scriptName = "start"
+			}
+		}
 		// move to package json scenario
-		return sl.SetApplicationStartInPackageJson(stager)
+		return sl.SetApplicationStartInPackageJson(stager, scriptName)
 	}
 
 	// we suppose that format is "web: node <application>"
 	var newCmd string
-	err, newCmd = sl.updateStartCommand(originalStartCommand)
+	newCmd, err = sl.updateStartCommand(originalStartCommand)
 
 	if err != nil {
 		return err
@@ -125,6 +189,62 @@ func (sl *SealightsHook) SetApplicationStartInProcfile(stager *libbuildpack.Stag
 		return err
 	}
 
+	return nil
+}
+
+func (sl *SealightsHook) ExtractNpmRunScriptName(command string) (string, error) {
+	// Remove leading "web:" prefix if present
+	cleanCommand := strings.TrimSpace(command)
+	if strings.HasPrefix(cleanCommand, "web:") {
+		cleanCommand = strings.TrimSpace(cleanCommand[4:])
+	}
+	
+	// Handle commands with cd prefix (e.g., "cd app && npm run start")
+	if strings.Contains(cleanCommand, "&&") {
+		parts := strings.Split(cleanCommand, "&&")
+		if len(parts) >= 2 {
+			cleanCommand = strings.TrimSpace(parts[len(parts)-1])
+		}
+	}
+	
+	// Extract script name from npm commands
+	// Patterns to match:
+	// - "npm start" -> "start"
+	// - "npm run start-dev" -> "start-dev"
+	// - "npm run dev" -> "dev"
+	patterns := []string{
+		`^npm\s+run\s+([a-zA-Z0-9\-_]+)`,     // npm run <script>
+		`^npm\s+([a-zA-Z0-9\-_]+)`,           // npm <script>
+	}
+	
+	for _, pattern := range patterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			sl.Log.Warning("Failed to compile regex pattern %s: %s", pattern, err)
+			continue
+		}
+		
+		matches := re.FindStringSubmatch(cleanCommand)
+		if len(matches) >= 2 {
+			scriptName := matches[1]
+			sl.Log.Debug("Extracted npm script name: %s from command: %s", scriptName, command)
+			return scriptName, nil
+		}
+	}
+	
+	return "", fmt.Errorf("failed to extract npm script name from command: %s", command)
+}
+
+func (sl *SealightsHook) ValidateNpmRunScript(packageJson map[string]interface{}, scriptName string) error {
+	scripts, ok := packageJson["scripts"].(map[string]interface{})
+	if !ok || scripts == nil {
+		return fmt.Errorf("no scripts section found in package.json")
+	}
+	
+	if _, exists := scripts[scriptName]; !exists {
+		return fmt.Errorf("script '%s' not found in package.json", scriptName)
+	}
+	
 	return nil
 }
 
@@ -149,41 +269,91 @@ func (sl *SealightsHook) usePackageJson(originalStartCommand string, stager *lib
 	return fmt.Errorf(NpmCommandStringError), false
 }
 
-func (sl *SealightsHook) getSealightsOptions(app string, token string, tokenFile string) *SealightsOptions {
-	o := &SealightsOptions{
-		Token:       token,
-		TokenFile:   tokenFile,
-		BsId:        os.Getenv("SL_BUILD_SESSION_ID"),
-		BsIdFile:    os.Getenv("SL_BUILD_SESSION_ID_FILE"),
-		Proxy:       os.Getenv("SL_PROXY"),
-		LabId:       os.Getenv("SL_LAB_ID"),
-		ProjectRoot: os.Getenv("SL_PROJECT_ROOT"),
-		TestStage:   os.Getenv("SL_TEST_STAGE"),
-		App:         app,
+func (sl *SealightsHook) getSealightsOptions(app string) *SealightsRunOptions {
+
+	buildSessionId := os.Getenv("SL_BUILD_SESSION_ID")
+	if sl.parameters.BuildSessionId != "" {
+		buildSessionId = sl.parameters.BuildSessionId
+	}
+
+	buildSessionIdFile := os.Getenv("SL_BUILD_SESSION_ID_FILE")
+	if sl.parameters.BuildSessionIdFile != "" {
+		buildSessionIdFile = sl.parameters.BuildSessionIdFile
+	}
+
+	proxy := os.Getenv("SL_PROXY")
+	if sl.parameters.Proxy != "" {
+		proxy = sl.parameters.Proxy
+	}
+
+	labId := os.Getenv("SL_LAB_ID")
+	if sl.parameters.LabId != "" {
+		labId = sl.parameters.LabId
+	}
+
+	projectRoot := os.Getenv("SL_PROJECT_ROOT")
+	if sl.parameters.ProjectRoot != "" {
+		projectRoot = sl.parameters.ProjectRoot
+	}
+
+	testStage := os.Getenv("SL_TEST_STAGE")
+	if sl.parameters.ProjectRoot != "" {
+		testStage = sl.parameters.TestStage
+	}
+
+	o := &SealightsRunOptions{
+		Token:              sl.parameters.Token,
+		TokenFile:          sl.parameters.TokenFile,
+		BuildSessionId:     buildSessionId,
+		BuildSessionIdFile: buildSessionIdFile,
+		Proxy:              proxy,
+		ProxyUsername:      sl.parameters.ProxyUsername,
+		ProxyPassword:      sl.parameters.ProxyPassword,
+		LabId:              labId,
+		ProjectRoot:        projectRoot,
+		TestStage:          testStage,
+		App:                app,
 	}
 	return o
 }
 
-func (sl *SealightsHook) SetApplicationStartInPackageJson(stager *libbuildpack.Stager) error {
+func (sl *SealightsHook) SetApplicationStartInPackageJson(stager *libbuildpack.Stager, targetScript string) error {
 	packageJson, err := sl.ReadPackageJson(stager)
 	if err != nil {
 		return err
 	}
-	scripts, _ := packageJson["scripts"].(map[string]interface{})
-	if scripts == nil {
-		return fmt.Errorf("failed to read scripts from %s", PackageJsonFile)
+	
+	// Validate that the target script exists
+	err = sl.ValidateNpmRunScript(packageJson, targetScript)
+	if err != nil {
+		// Try fallback to "start" if configured script doesn't exist
+		if targetScript != "start" {
+			sl.Log.Warning("Script '%s' not found, falling back to 'start': %s", targetScript, err)
+			fallbackErr := sl.ValidateNpmRunScript(packageJson, "start")
+			if fallbackErr != nil {
+				return fmt.Errorf("target script '%s' not found and fallback to 'start' failed: %s", targetScript, fallbackErr)
+			}
+			targetScript = "start"
+		} else {
+			return err
+		}
 	}
-	originalStartScript, _ := scripts["start"].(string)
+	
+	scripts := packageJson["scripts"].(map[string]interface{})
+	originalStartScript, _ := scripts[targetScript].(string)
 	if originalStartScript == "" {
-		return fmt.Errorf("failed to read start from scripts in %s", PackageJsonFile)
+		return fmt.Errorf("failed to read %s script from %s", targetScript, PackageJsonFile)
 	}
-	// we suppose that format is "start: node <application>"
+	
+	// Update the command with Sealights injection
 	var newCmd string
-	err, newCmd = sl.updateStartCommand(originalStartScript)
+	newCmd, err = sl.updateStartCommand(originalStartScript)
 	if err != nil {
 		return err
 	}
-	packageJson["scripts"].(map[string]interface{})["start"] = newCmd
+	
+	sl.Log.Debug("Injecting Sealights into '%s' script: %s -> %s", targetScript, originalStartScript, newCmd)
+	scripts[targetScript] = newCmd
 
 	err = libbuildpack.NewJSON().Write(filepath.Join(stager.BuildDir(), PackageJsonFile), packageJson)
 	if err != nil {
@@ -197,9 +367,9 @@ func (sl *SealightsHook) SetApplicationStartInPackageJson(stager *libbuildpack.S
 func (sl *SealightsHook) ReadPackageJson(stager *libbuildpack.Stager) (map[string]interface{}, error) {
 	p := map[string]interface{}{}
 
-	if err := libbuildpack.NewJSON().Load(filepath.Join(stager.BuildDir(), "package.json"), &p); err != nil {
+	if err := libbuildpack.NewJSON().Load(filepath.Join(stager.BuildDir(), PackageJsonFile), &p); err != nil {
 		if err != nil {
-			sl.Log.Error("failed to read %s error: %s", Procfile, err.Error())
+			sl.Log.Error("failed to read %s error: %s", PackageJsonFile, err.Error())
 			return nil, err
 		}
 	}
@@ -216,13 +386,22 @@ func (sl *SealightsHook) SetApplicationStartInManifest(stager *libbuildpack.Stag
 
 	_, usePackageJson := sl.usePackageJson(originalStartCommand, stager)
 	if usePackageJson {
+		// Extract script name from command or use configured default
+		scriptName, err := sl.ExtractNpmRunScriptName(originalStartCommand)
+		if err != nil {
+			sl.Log.Warning("Failed to extract script name from command '%s', using configured default: %s", originalStartCommand, err)
+			scriptName = sl.parameters.NpmRunScript
+			if scriptName == "" {
+				scriptName = "start"
+			}
+		}
 		// move to package json scenario
-		return sl.SetApplicationStartInPackageJson(stager)
+		return sl.SetApplicationStartInPackageJson(stager, scriptName)
 	}
 
-	// we suppose that format is "start: node <application>"
+	// we suppose that format is "node <application>"
 	var newCmd string
-	err, newCmd = sl.updateStartCommand(originalStartCommand)
+	newCmd, err = sl.updateStartCommand(originalStartCommand)
 	if err != nil {
 		return err
 	}
@@ -237,28 +416,27 @@ func (sl *SealightsHook) SetApplicationStartInManifest(stager *libbuildpack.Stag
 	return nil
 }
 
-func (sl *SealightsHook) updateStartCommand(originalCommand string) (error, string) {
-	slTokenFound, token, tokenFile := sl.GetTokenFromEnvironment()
+func (sl *SealightsHook) updateStartCommand(originalCommand string) (string, error) {
 
-	if !slTokenFound {
+	if !sl.RunWithSealights() {
 		sl.Log.Info("Sealights service not found")
-		return fmt.Errorf(SealightsNotBoundError), ""
+		return "", fmt.Errorf(SealightsNotBoundError)
 	}
 
 	split := strings.SplitAfterN(originalCommand, "node", 2)
 
 	if len(split) < 2 {
-		return fmt.Errorf(CommandStringError), ""
+		return "", fmt.Errorf(CommandStringError)
 	}
-	o := sl.getSealightsOptions(split[1], token, tokenFile)
+	o := sl.getSealightsOptions(split[1])
 
 	err := sl.validate(o)
 	if err != nil {
-		return err, ""
+		return "", err
 	}
 	newCmd := sl.createAppStartCommandLine(o)
 	sl.Log.Debug("new start script: %s", newCmd)
-	return nil, newCmd
+	return newCmd, nil
 }
 
 func (sl *SealightsHook) ReadManifestFile(stager *libbuildpack.Stager, y *libbuildpack.YAML) (error, Manifest) {
@@ -273,16 +451,18 @@ func (sl *SealightsHook) ReadManifestFile(stager *libbuildpack.Stager, y *libbui
 }
 
 func (sl *SealightsHook) installAgent(stager *libbuildpack.Stager) error {
-	err := sl.Command.Execute(stager.BuildDir(), os.Stdout, os.Stderr, "npm", "install", "slnodejs")
+	packageName, source := sl.getPackageName()
+	sl.Log.Info("npm install %s\nversion source: %s", packageName, source)
+	err := sl.Command.Execute(stager.BuildDir(), os.Stdout, os.Stderr, "npm", "install", packageName)
 	if err != nil {
-		sl.Log.Error("npm install slnodejs failed with error: " + err.Error())
+		sl.Log.Error("npm install %s failed with error: %s", packageName, err.Error())
 		return err
 	}
-	sl.Log.Info("npm install slnodejs finished successfully")
+	sl.Log.Info("npm install %s finished successfully", packageName)
 	return nil
 }
 
-func (sl *SealightsHook) createAppStartCommandLine(o *SealightsOptions) string {
+func (sl *SealightsHook) createAppStartCommandLine(o *SealightsRunOptions) string {
 	var sb strings.Builder
 	sb.WriteString("./node_modules/.bin/slnodejs run  --useinitialcolor true ")
 
@@ -292,14 +472,22 @@ func (sl *SealightsHook) createAppStartCommandLine(o *SealightsOptions) string {
 		sb.WriteString(fmt.Sprintf(" --token %s", o.Token))
 	}
 
-	if o.BsIdFile != "" {
-		sb.WriteString(fmt.Sprintf(" --buildsessionidfile %s", o.BsIdFile))
+	if o.BuildSessionIdFile != "" {
+		sb.WriteString(fmt.Sprintf(" --buildsessionidfile %s", o.BuildSessionIdFile))
 	} else {
-		sb.WriteString(fmt.Sprintf(" --buildsessionid %s", o.BsId))
+		sb.WriteString(fmt.Sprintf(" --buildsessionid %s", o.BuildSessionId))
 	}
 
 	if o.Proxy != "" {
 		sb.WriteString(fmt.Sprintf(" --proxy %s ", o.Proxy))
+	}
+
+	if o.ProxyUsername != "" {
+		sb.WriteString(fmt.Sprintf(" --proxyUsername %s ", o.ProxyUsername))
+	}
+
+	if o.ProxyPassword != "" {
+		sb.WriteString(fmt.Sprintf(" --proxyPassword %s ", o.ProxyPassword))
 	}
 
 	if o.LabId != "" {
@@ -319,13 +507,13 @@ func (sl *SealightsHook) createAppStartCommandLine(o *SealightsOptions) string {
 	return sb.String()
 }
 
-func (sl *SealightsHook) validate(o *SealightsOptions) error {
+func (sl *SealightsHook) validate(o *SealightsRunOptions) error {
 	if o.Token == "" && o.TokenFile == "" {
 		sl.Log.Error(EmptyTokenError)
 		return fmt.Errorf(EmptyTokenError)
 	}
 
-	if o.BsId == "" && o.BsIdFile == "" {
+	if o.BuildSessionId == "" && o.BuildSessionIdFile == "" {
 		sl.Log.Error(EmptyBuildError)
 		return fmt.Errorf(EmptyBuildError)
 	}
@@ -341,67 +529,156 @@ func (sl *SealightsHook) injectSealights(stager *libbuildpack.Stager) error {
 		sl.Log.Info("Integrating sealights into manifest.yml")
 		return sl.SetApplicationStartInManifest(stager)
 	} else {
-		sl.Log.Info("Integrating sealights into package.json")
-		return sl.SetApplicationStartInPackageJson(stager)
+	sl.Log.Info("Integrating sealights into package.json")
+	// Use configured script name or default to "start"
+	scriptName := sl.parameters.NpmRunScript
+	if scriptName == "" {
+		scriptName = "start"
+	}
+	return sl.SetApplicationStartInPackageJson(stager, scriptName)
 	}
 }
 
-func containsSealightsService(key string, services interface{}, query string) bool {
-	var serviceName string
+func (sl *SealightsHook) parseVcapServices() {
 
-	if strings.Contains(key, query) {
-		return true
-	}
-	val := services.([]interface{})
-	for serviceIndex := range val {
-		service := val[serviceIndex].(map[string]interface{})
-		if v, ok := service["name"]; ok {
-			serviceName = v.(string)
-		}
-		if strings.Contains(serviceName, query) {
-			return true
-		}
-	}
-	return false
-}
-
-func (sl *SealightsHook) GetTokenFromEnvironment() (bool, string, string) {
-
-	type rawVcapServicesJSONValue map[string]interface{}
-
-	var vcapServices rawVcapServicesJSONValue
-
-	vcapServicesEnvironment := os.Getenv("VCAP_SERVICES")
-
-	if vcapServicesEnvironment == "" {
-		sl.Log.Debug("Sealights could not find VCAP_SERVICES in the environment")
-		return false, "", ""
+	if sl.initialized {
+		sl.Log.Debug("already initialized. config won`t be parsed")
+		return
+	} else {
+		sl.initialized = true
 	}
 
-	err := json.Unmarshal([]byte(vcapServicesEnvironment), &vcapServices)
-	if err != nil {
-		sl.Log.Warning("Sealights could not parse VCAP_SERVICES")
-		return false, "", ""
+	var vcapServices map[string][]struct {
+		Name        string                 `json:"name"`
+		Credentials map[string]interface{} `json:"credentials"`
 	}
 
-	for key, services := range vcapServices {
-		if containsSealightsService(key, services, "sealights") {
-			sl.Log.Debug("Sealights found credentials in VCAP_SERVICES")
-			val := services.([]interface{})
-			for serviceIndex := range val {
-				service := val[serviceIndex].(map[string]interface{})
-				if credentials, exists := service["credentials"].(map[string]interface{}); exists {
-					token := getContrastCredentialString(credentials, "token")
-					tokenFile := getContrastCredentialString(credentials, "tokenFile")
-					if token == "" && tokenFile == "" {
-						return false, "", ""
-					}
-					return true, token, tokenFile
-				}
+	if err := json.Unmarshal([]byte(os.Getenv("VCAP_SERVICES")), &vcapServices); err != nil {
+		sl.Log.Debug("Failed to unmarshal VCAP_SERVICES: %s", err)
+		return
+	}
+
+	for _, services := range vcapServices {
+		for _, service := range services {
+			if !strings.Contains(strings.ToLower(service.Name), "sealights") {
+				continue
 			}
+
+			queryString := func(key string) string {
+				if value, ok := service.Credentials[key].(string); ok {
+					return value
+				}
+				return ""
+			}
+
+			options := &SealightsParameters{
+				Token:              queryString("token"),
+				TokenFile:          queryString("tokenFile"),
+				BuildSessionId:     queryString("buildSessionId"),
+				BuildSessionIdFile: queryString("buildSessionIdFile"),
+				LabId:              queryString("labId"),
+				Version:            queryString("version"),
+				CustomAgentUrl:     queryString("customAgentUrl"),
+				Proxy:              queryString("proxy"),
+				ProxyUsername:      queryString("proxyUsername"),
+				ProxyPassword:      queryString("proxyPassword"),
+				ProjectRoot:        queryString("projectRoot"),
+				TestStage:          queryString("testStage"),
+				NpmRunScript:       queryString("npmRunScript"),
+			}
+
+			// write warning in case token is not provided
+			if options.Token != "" && options.TokenFile != "" {
+				sl.Log.Warning("Sealights access token isn't provided")
+			}
+
+			sl.parameters = options
+			return
 		}
 	}
-	return false, "", ""
+
+}
+
+func (sl *SealightsHook) getPackageName() (string, string) {
+	if sl.parameters.CustomAgentUrl != "" {
+		return sl.parameters.CustomAgentUrl, "customAgentUrl parameter"
+	}
+
+	source := "DefaultVersion"
+	version := DefaultVersion
+	if sl.parameters.Version != "" {
+		version = sl.parameters.Version
+		source = "version parameter"
+		return fmt.Sprintf(AgentPackageVersionFormat, DefaultPackage, version), source
+	}
+
+	recomendedVersion, err := sl.getRecomendedAgentVersionFromServer()
+	if err != nil {
+		sl.Log.Warning(err.Error())
+	} else {
+		version = recomendedVersion
+		source = "recomended version from server"
+	}
+
+	return fmt.Sprintf(AgentPackageVersionFormat, DefaultPackage, version), source
+}
+
+func (sl *SealightsHook) getRecomendedAgentVersionFromServer() (string, error) {
+	domain := os.Getenv("SL_DOMAIN")
+	if domain == "" {
+		return "", errors.New("env variable \"SL_DOMAIN\" is not defined. recomended version wouldn't be requested")
+	}
+
+	url := fmt.Sprintf(AgentRecommendedVersionUrlFormat, domain)
+
+	client := sl.createHttpClient()
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	// Parse the JSON response
+	var response RecomendedVersionResponse
+	err = json.Unmarshal(body, &response)
+	if err != nil {
+		return "", err
+	}
+
+	// Return the version from the parsed response
+	return response.Agent.Version, nil
+}
+
+// Create simple http client or http client with proxy, based on the settings
+func (sl *SealightsHook) createHttpClient() HttpClient {
+	if sl.HttpClient != nil {
+		return sl.HttpClient
+	}
+
+	if sl.parameters.Proxy != "" {
+		proxyUrl, _ := url.Parse(sl.parameters.Proxy)
+
+		sl.HttpClient = &http.Client{
+			Transport: &http.Transport{
+				Proxy: http.ProxyURL(&url.URL{
+					Scheme: proxyUrl.Scheme,
+					User:   url.UserPassword(sl.parameters.ProxyUsername, sl.parameters.ProxyPassword),
+					Host:   proxyUrl.Host,
+				}),
+			},
+		}
+		return sl.HttpClient
+	} else {
+		sl.HttpClient = &http.Client{}
+		return sl.HttpClient
+	}
 }
 
 func fileExists(path string) bool {

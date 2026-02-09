@@ -1,3 +1,173 @@
+v1.8.42 Jan 22, 2026
+=====================
+
+* Add node 24.13.0, remove node 24.3.0
+  for stack(s) cflinuxfs4
+
+* Add node 22.22.0, remove node 22.20.0 and node 22.21.1
+  for stack(s) cflinuxfs4
+
+* Rebuild python 3.11.14
+  for stack(s) cflinuxfs3, cflinuxfs4
+
+v1.8.34 Feb 14, 2025
+=====================
+
+* Add node 22.13.0, remove node 22.11.0
+  for stack(s) cflinuxfs4
+  Note: This is not the latest patch. 22.13.1 is already available in the buildpack
+
+
+v1.8.33 Jan 31, 2025
+=====================
+
+* Add node 18.20.6, remove node 18.20.4
+  for stack(s) cflinuxfs4, cflinuxfs3
+
+* Add node 20.18.2, remove node 20.18.0
+  for stack(s) cflinuxfs3, cflinuxfs4
+
+* Add node 22.13.1, remove node 22.8.0
+  for stack(s) cflinuxfs4
+
+
+v1.8.32 Jan 08, 2025
+=====================
+
+* Bump go deps
+
+
+v1.8.31 Dec 12, 2024
+=====================
+
+* Add node 20.18.1, remove node 20.16.0 (#775)
+  for stack(s) cflinuxfs4, cflinuxfs3
+
+* Add node 18.20.5, remove node 18.20.3
+  for stack(s) cflinuxfs4, cflinuxfs3
+
+* Add python 3.11.11, remove python 3.11.10
+  for stack(s) cflinuxfs3, cflinuxfs4
+
+
+v1.8.30 Nov 07, 2024
+=====================
+
+* Add node 22.11.0, remove node 22.7.0
+  for stack(s) cflinuxfs4
+
+* Add node 20.18.0, remove node 20.15.1
+  for stack(s) cflinuxfs3, cflinuxfs4
+
+
+v1.8.29 Sep 18, 2024
+=====================
+
+* Add node 22.8.0, remove node 22.5.0
+  for stack(s) cflinuxfs4
+
+* Add python 3.11.10, remove python 3.11.9
+  for stack(s) cflinuxfs4, cflinuxfs3
+
+
+v1.8.28 Aug 26, 2024
+=====================
+
+* Add node 22.7.0, remove node 22.3.0
+  for stack(s) cflinuxfs4
+
+* Add node 20.16.0, remove node 20.15.0
+  for stack(s) cflinuxfs3, cflinuxfs4
+
+* fix: npm version command (#740)
+
+* fix reading yarn version
+  continuation of #740 with tests added (#757)
+
+
+v1.8.27 Jul 22, 2024
+=====================
+
+* Add node 22.5.0, remove node 22.4.1 (#748)
+  for stack(s) cflinuxfs4
+
+* Add node 18.20.4, remove node 18.20.2
+  for stack(s) cflinuxfs4, cflinuxfs3
+
+* Add node 22.4.1
+  for stack(s) cflinuxfs4
+
+* Add node 20.15.1, remove node 20.13.1
+  for stack(s) cflinuxfs4, cflinuxfs3
+
+v1.8.26 Jun 27, 2024
+=====================
+
+* Add node 20.15.0, remove node 20.12.0
+  for stack(s) cflinuxfs4, cflinuxfs3
+
+* Add node 22.3.0
+  for stack(s) cflinuxfs4
+
+
+v1.8.25 May 22, 2024
+=====================
+
+* Add node 18.20.3, remove node 18.19.1
+  for stack(s) cflinuxfs3, cflinuxfs4
+  (https://www.pivotaltracker.com/story/show/187642410)
+
+* Add node 20.13.1, remove node 20.11.1 (#722)
+  for stack(s) cflinuxfs4, cflinuxfs3
+  (https://www.pivotaltracker.com/story/show/187563723)
+
+
+v1.8.24 Apr 16, 2024
+=====================
+
+* Add node 18.20.2, remove node 18.19.0 (#717)
+  for stack(s) cflinuxfs3, cflinuxfs4
+  (https://www.pivotaltracker.com/story/show/187406609)
+
+* Add node 20.12.2, remove node 20.11.0 (#716)
+  for stack(s) cflinuxfs4, cflinuxfs3
+  (https://www.pivotaltracker.com/story/show/187406689)
+
+* Add python 3.11.9, remove python 3.11.8 (#712)
+  for stack(s) cflinuxfs4, cflinuxfs3
+  (https://www.pivotaltracker.com/story/show/187354849)
+
+* Updating github-config (#706)
+
+
+v1.8.23 Mar 04, 2024
+=====================
+
+* Add node 20.11.1, remove node 20.10.0 for stack(s) cflinuxfs4, cflinuxfs3 (#699)
+
+* Add node 18.19.1, remove node 18.18.2 for stack(s) cflinuxfs3, cflinuxfs4 (#697)
+  
+
+v1.8.22 Feb 14, 2024
+=====================
+
+* Add python 3.11.8, remove python 3.11.7 for stack(s) cflinuxfs4, cflinuxfs3
+
+* Add node 20.11.0, remove node 20.9.0 for stack(s) cflinuxfs4, cflinuxfs3
+
+* Add new parameters for sealights hook (#688)
+
+
+v1.8.21 Dec 13, 2023
+=====================
+
+* Add node 18.19.0, remove node 18.18.0 for stack(s) cflinuxfs3, cflinuxfs4
+
+* Add node 20.10.0, remove node 20.8.1 for stack(s) cflinuxfs4, cflinuxfs3
+
+* Add python 3.11.7, remove python 3.11.6 for stack(s) cflinuxfs3, cflinuxfs4
+
+
 v1.8.20 Nov 21, 2023
 =====================
 

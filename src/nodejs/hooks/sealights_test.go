@@ -2,7 +2,10 @@ package hooks_test
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,29 +18,48 @@ import (
 
 type Command struct {
 	called bool
+	args   []string
 }
 
 func (c *Command) Execute(dir string, stdout io.Writer, stderr io.Writer, program string, args ...string) error {
 	c.called = true
+	c.args = args
 	return nil
+}
+
+// MockHttpClient is a mock implementation of the HTTPClient interface for testing.
+type MockHttpClient struct {
+	Response string
+	Error    string
+}
+
+func (m *MockHttpClient) Get(url string) (*http.Response, error) {
+	if m.Error == "" {
+		reader := strings.NewReader(m.Response)
+		return &http.Response{Body: io.NopCloser(reader)}, nil
+	} else {
+		return nil, errors.New(m.Error)
+	}
+
 }
 
 var _ = Describe("Sealights hook", func() {
 	var (
-		err                           error
-		buildDir                      string
-		logger                        *libbuildpack.Logger
-		buffer                        *bytes.Buffer
-		stager                        *libbuildpack.Stager
-		sealights                     *hooks.SealightsHook
-		yamlFile                      *libbuildpack.YAML
-		build                         string
-		proxy                         string
-		labId                         string
-		projectRoot                   string
-		testStage                     string
-		procfile                      string
+		err         error
+		buildDir    string
+		logger      *libbuildpack.Logger
+		buffer      *bytes.Buffer
+		stager      *libbuildpack.Stager
+		sealights   *hooks.SealightsHook
+		yamlFile    *libbuildpack.YAML
+		build       string
+		proxy       string
+		labId       string
+		projectRoot string
+		testStage   string
+		// procfile                      string
 		command                       *Command
+		httpClient                    *MockHttpClient
 		procfileName                  = "Procfile"
 		packageJsonName               = "package.json"
 		manifestName                  = "manifest.yml"
@@ -69,11 +91,11 @@ var _ = Describe("Sealights hook", func() {
 		projectRoot = os.Getenv("SL_PROJECT_ROOT")
 		testStage = os.Getenv("SL_TEST_STAGE")
 		command = &Command{}
-		sealights = &hooks.SealightsHook{
-			libbuildpack.DefaultHook{},
-			logger,
-			command,
+		httpClient = &MockHttpClient{
+			Response: "",
+			Error:    "",
 		}
+		sealights = hooks.NewSealightsHook(logger, command, httpClient)
 	})
 
 	AfterEach(func() {
@@ -89,8 +111,8 @@ var _ = Describe("Sealights hook", func() {
 		Expect(err).To(BeNil())
 		err = os.Unsetenv("VCAP_SERVICES")
 		Expect(err).To(BeNil())
-		err = os.WriteFile(filepath.Join(stager.BuildDir(), procfileName), []byte(procfile), 0755)
-		Expect(err).To(BeNil())
+		// err = os.WriteFile(filepath.Join(stager.BuildDir(), procfileName), []byte(procfile), 0755)
+		// Expect(err).To(BeNil())
 		err = os.RemoveAll(buildDir)
 		Expect(err).To(BeNil())
 	})
@@ -142,13 +164,174 @@ var _ = Describe("Sealights hook", func() {
 				Expect(command.called).To(BeFalse())
 			})
 		})
+
+		Context("Configure sealight with VCAP_SERVICES only", func() {
+			BeforeEach(func() {
+				Expect(err).To(BeNil())
+				err = os.Setenv("SL_BUILD_SESSION_ID", "")
+				Expect(err).To(BeNil())
+				err = os.Setenv("SL_BUILD_SESSION_ID_FILE", "")
+				Expect(err).To(BeNil())
+				err = os.Setenv("SL_PROXY", "")
+				Expect(err).To(BeNil())
+				err = os.Setenv("SL_LAB_ID", "")
+				Expect(err).To(BeNil())
+				err = os.Setenv("SL_PROJECT_ROOT", "")
+				Expect(err).To(BeNil())
+				err = os.Setenv("SL_TEST_STAGE", "")
+
+				err = os.WriteFile(filepath.Join(stager.BuildDir(), procfileName), []byte(testProcfile), 0755)
+				Expect(err).To(BeNil())
+			})
+
+			It("hook fails with empty token and tokenFile", func() {
+				vcapTemplate := `{
+					"user-provided":[{
+						"label": "user-provided",
+						"name": "sealights",
+						"credentials": {
+							"token": "",
+							"tokenFile": "",
+							"buildSessionId": "` + bsid + `"
+						}
+					}]
+				}`
+				err = os.Setenv("VCAP_SERVICES", vcapTemplate)
+				Expect(err).To(BeNil())
+
+				err = sealights.AfterCompile(stager)
+				Expect(err).To(BeNil())
+
+				Expect(command.called).To(BeFalse())
+				bytes, err := os.ReadFile(filepath.Join(stager.BuildDir(), procfileName))
+				Expect(err).To(BeNil())
+				cleanResult := strings.ReplaceAll(string(bytes), " ", "")
+				expectedCommand := strings.ReplaceAll("node index.js --build 192 --name Good", " ", "")
+				Expect(cleanResult).To(Equal("web:" + expectedCommand))
+			})
+
+			It("hook fails with empty buildSessionId and buildSessionIdFile", func() {
+				vcapTemplate := `{
+					"user-provided":[{
+						"label": "user-provided",
+						"name": "sealights",
+						"credentials": {
+							"token": "` + token + `",
+							"buildSessionId": "",
+							"buildSessionIdFile": ""
+						}
+					}]
+				}`
+				err = os.Setenv("VCAP_SERVICES", vcapTemplate)
+				Expect(err).To(BeNil())
+
+				err = sealights.AfterCompile(stager)
+				Expect(err).To(BeNil())
+
+				Expect(command.called).To(BeFalse())
+				bytes, err := os.ReadFile(filepath.Join(stager.BuildDir(), procfileName))
+				Expect(err).To(BeNil())
+				cleanResult := strings.ReplaceAll(string(bytes), " ", "")
+				expectedCommand := strings.ReplaceAll("node index.js --build 192 --name Good", " ", "")
+				Expect(cleanResult).To(Equal("web:" + expectedCommand))
+			})
+
+			It("hook doesn't fail with token or tokenFile and buildSessionId or buildSessionIdFile", func() {
+				vcapTemplate := `{
+					"user-provided":[{
+						"label": "user-provided",
+						"name": "sealights",
+						"credentials": {
+							"token": "` + token + `",
+							"buildSessionId": "` + bsid + `"
+						}
+					}]
+				}`
+				err = os.Setenv("VCAP_SERVICES", vcapTemplate)
+				Expect(err).To(BeNil())
+
+				err = sealights.AfterCompile(stager)
+				Expect(err).To(BeNil())
+				Expect(command.called).To(BeTrue())
+				bytes, err := os.ReadFile(filepath.Join(stager.BuildDir(), procfileName))
+				Expect(err).To(BeNil())
+				cleanResult := strings.ReplaceAll(string(bytes), " ", "")
+				expectedCommand := strings.ReplaceAll("./node_modules/.bin/slnodejs run --useinitialcolor true --token good_token --buildsessionid goodBsid index.js --build 192 --name Good", " ", "")
+				Expect(cleanResult).To(Equal("web:" + expectedCommand))
+			})
+
+			It("hook pass all params to updated cli command", func() {
+				vcapTemplate := `{
+					"user-provided":[{
+						"label": "user-provided",
+						"name": "sealights",
+						"credentials": {
+							"token": "` + token + `",
+							"buildSessionId": "` + bsid + `",
+							"labId": "goodLab",
+							"projectRoot": "./",
+							"testStage": "Good tests",
+							"proxy": "goodProxy",
+							"proxyUsername": "goodName",
+							"proxyPassword": "goodPassword"
+						}
+					}]
+				}`
+				err = os.Setenv("VCAP_SERVICES", vcapTemplate)
+				Expect(err).To(BeNil())
+
+				err = sealights.AfterCompile(stager)
+				Expect(err).To(BeNil())
+				Expect(command.called).To(BeTrue())
+				bytes, err := os.ReadFile(filepath.Join(stager.BuildDir(), procfileName))
+				Expect(err).To(BeNil())
+				cleanResult := strings.ReplaceAll(string(bytes), " ", "")
+				expectedCommand := strings.ReplaceAll("./node_modules/.bin/slnodejs run --useinitialcolor true --token good_token --buildsessionid goodBsid --proxy goodProxy --proxyUsername goodName --proxyPassword goodPassword --labid goodLab --projectroot ./ --teststage \"Good tests\" index.js --build 192 --name Good", " ", "")
+				Expect(cleanResult).To(Equal("web:" + expectedCommand))
+			})
+
+			It("should use custom npmRunScript parameter for npm commands", func() {
+				err = os.WriteFile(filepath.Join(stager.BuildDir(), procfileName), []byte("web: npm run dev"), 0755)
+				Expect(err).To(BeNil())
+				
+				customPackageJson := "{\n    \"scripts\": {\n        \"dev\": \"" + originalStartCommand + "\",\n        \"start\": \"node index.js\"\n    }\n}"
+				err = os.WriteFile(filepath.Join(stager.BuildDir(), packageJsonName), []byte(customPackageJson), 0755)
+				Expect(err).To(BeNil())
+
+				vcapTemplate := `{
+					"user-provided":[{
+						"label": "user-provided",
+						"name": "sealights",
+						"credentials": {
+							"token": "` + token + `",
+							"buildSessionId": "` + bsid + `",
+							"npmRunScript": "dev"
+						}
+					}]
+				}`
+				err = os.Setenv("VCAP_SERVICES", vcapTemplate)
+				Expect(err).To(BeNil())
+
+				err = sealights.AfterCompile(stager)
+				Expect(err).To(BeNil())
+				
+				packageJson, err := sealights.ReadPackageJson(stager)
+				Expect(err).To(BeNil())
+				
+				devScript := packageJson["scripts"].(map[string]interface{})["dev"].(string)
+				Expect(devScript).To(ContainSubstring("slnodejs"))
+				Expect(devScript).To(ContainSubstring("index.js --build 192 --name Good"))
+			})
+		})
+
 		Context("Sealights injection", func() {
 			BeforeEach(func() {
 				os.Setenv("VCAP_SERVICES", `{"user-provided":[
-														{ "label": "user-provided",
+														{ 
+															"label": "user-provided",
 															"name": "sealights",
 															"credentials": {
-															"token": "`+token+`"
+																"token": "`+token+`"
 															}
 															}
 													    ]}`)
@@ -160,6 +343,8 @@ var _ = Describe("Sealights hook", func() {
 				})
 				It("test application run cmd creation from bsid file", func() {
 					err = os.Setenv("SL_LAB_ID", lab)
+					Expect(err).To(BeNil())
+					err = os.Setenv("SL_PROXY", proxy)
 					Expect(err).To(BeNil())
 					err = os.Setenv("SL_PROJECT_ROOT", root)
 					Expect(err).To(BeNil())
@@ -182,6 +367,8 @@ var _ = Describe("Sealights hook", func() {
 				})
 				It("test application run cmd creation", func() {
 					err = os.Setenv("SL_LAB_ID", lab)
+					Expect(err).To(BeNil())
+					err = os.Setenv("SL_PROXY", proxy)
 					Expect(err).To(BeNil())
 					err = os.Setenv("SL_PROJECT_ROOT", root)
 					Expect(err).To(BeNil())
@@ -209,7 +396,7 @@ var _ = Describe("Sealights hook", func() {
 				})
 
 				It("fail to find scripts section in package.json", func() {
-					err = sealights.SetApplicationStartInPackageJson(stager)
+					err = sealights.SetApplicationStartInPackageJson(stager, "start")
 					Expect(err).ShouldNot(BeNil())
 				})
 			})
@@ -225,7 +412,7 @@ var _ = Describe("Sealights hook", func() {
 				})
 
 				It("fail to start under scripts section in package.json", func() {
-					err = sealights.SetApplicationStartInPackageJson(stager)
+					err = sealights.SetApplicationStartInPackageJson(stager, "start")
 					Expect(err).ShouldNot(BeNil())
 				})
 			})
@@ -243,7 +430,7 @@ var _ = Describe("Sealights hook", func() {
 					Expect(err).To(BeNil())
 					err = os.Setenv("SL_TEST_STAGE", stage)
 					Expect(err).To(BeNil())
-					err = sealights.SetApplicationStartInPackageJson(stager)
+					err = sealights.SetApplicationStartInPackageJson(stager, "start")
 					Expect(err).To(BeNil())
 					packageJson, err := sealights.ReadPackageJson(stager)
 					Expect(err).To(BeNil())
@@ -255,7 +442,7 @@ var _ = Describe("Sealights hook", func() {
 					Expect(err).NotTo(HaveOccurred())
 					err = os.Setenv("SL_BUILD_SESSION_ID_FILE", "")
 					Expect(err).NotTo(HaveOccurred())
-					err = sealights.SetApplicationStartInPackageJson(stager)
+					err = sealights.SetApplicationStartInPackageJson(stager, "start")
 					Expect(err).To(MatchError(ContainSubstring(hooks.EmptyBuildError)))
 				})
 				It("test application run cmd creation", func() {
@@ -268,7 +455,7 @@ var _ = Describe("Sealights hook", func() {
 					err = os.Setenv("SL_BUILD_SESSION_ID_FILE", "")
 					Expect(err).NotTo(HaveOccurred())
 					Expect(err).To(BeNil())
-					err = sealights.SetApplicationStartInPackageJson(stager)
+					err = sealights.SetApplicationStartInPackageJson(stager, "start")
 					packageJson, err := sealights.ReadPackageJson(stager)
 					Expect(err).To(BeNil())
 					cleanResult := strings.ReplaceAll(packageJson["scripts"].(map[string]interface{})["start"].(string), " ", "")
@@ -323,5 +510,246 @@ var _ = Describe("Sealights hook", func() {
 			})
 		})
 
+		Context("Sealights agent installation", func() {
+			customUrl := "customUrl"
+			customVersion := "customVersion"
+			recommendedVersion := "goodVersion"
+
+			setVcap := func(version string, customAgentUrl string) {
+				vcapTemplate := `{
+					"user-provided":[{
+						"label": "user-provided",
+						"name": "sealights",
+						"credentials": {
+							"token": "%s",
+							"version": "%s",
+							"customAgentUrl": "%s"
+						}
+					}]
+				}`
+
+				os.Setenv("VCAP_SERVICES", fmt.Sprintf(vcapTemplate, token, version, customAgentUrl))
+			}
+
+			BeforeEach(func() {
+				err = os.Setenv("SL_DOMAIN", "my-domain")
+				Expect(err).To(BeNil())
+				err = os.WriteFile(filepath.Join(stager.BuildDir(), procfileName), []byte(testProcfile), 0755)
+				Expect(err).To(BeNil())
+			})
+
+			It("get recomended version from server", func() {
+				setVcap("", "")
+				httpClient.Response = `{"agent":{"version": "` + recommendedVersion + `"}}`
+
+				err = sealights.AfterCompile(stager)
+
+				Expect(err).To(BeNil())
+				Expect(command.called).To(Equal(true))
+				Expect(command.args[1]).To(Equal("slnodejs@" + recommendedVersion))
+			})
+			It("shouldn't get recomended version from server if SL_DOMAIN not set", func() {
+				err = os.Setenv("SL_DOMAIN", "")
+				Expect(err).To(BeNil())
+				setVcap("", "")
+				httpClient.Response = `{"agent":{"version": "` + recommendedVersion + `"}}`
+
+				err = sealights.AfterCompile(stager)
+
+				Expect(err).To(BeNil())
+				Expect(command.called).To(Equal(true))
+				Expect(command.args[1]).To(Equal("slnodejs@latest"))
+			})
+			It("install default version if no other provided and get recomended version failed", func() {
+				setVcap("", "")
+				httpClient.Error = "some error"
+
+				err = sealights.AfterCompile(stager)
+
+				Expect(err).To(BeNil())
+				Expect(command.args[1]).To(Equal("slnodejs@latest"))
+			})
+			It("use custom url if provided", func() {
+				setVcap("", customUrl)
+
+				err = sealights.AfterCompile(stager)
+
+				Expect(err).To(BeNil())
+				Expect(command.args[1]).To(Equal(customUrl))
+			})
+			It("should not get custom version if customUrl provided", func() {
+				setVcap(customVersion, customUrl)
+
+				err = sealights.AfterCompile(stager)
+
+				Expect(err).To(BeNil())
+				Expect(command.args[1]).To(Equal(customUrl))
+			})
+			It("use version parameter if provided", func() {
+				setVcap(customVersion, "")
+
+				err = sealights.AfterCompile(stager)
+
+				Expect(err).To(BeNil())
+				Expect(command.args[1]).To(Equal("slnodejs@" + customVersion))
+			})
+			It("should not get recomended version from server if customVersion provided", func() {
+				setVcap(customVersion, "")
+
+				httpClient.Response = `{"agent":{"version": "` + recommendedVersion + `"}}`
+
+				err = sealights.AfterCompile(stager)
+
+				Expect(err).To(BeNil())
+				Expect(command.args[1]).To(Equal("slnodejs@" + customVersion))
+			})
+		})
+
+		Context("extractNpmRunScriptName function", func() {
+			It("should extract script name from npm run command", func() {
+				scriptName, err := sealights.ExtractNpmRunScriptName("web: npm run start-dev")
+				Expect(err).To(BeNil())
+				Expect(scriptName).To(Equal("start-dev"))
+			})
+
+			It("should extract script name from npm command without run", func() {
+				scriptName, err := sealights.ExtractNpmRunScriptName("web: npm start")
+				Expect(err).To(BeNil())
+				Expect(scriptName).To(Equal("start"))
+			})
+
+			It("should extract script name from command with cd prefix", func() {
+				scriptName, err := sealights.ExtractNpmRunScriptName("web: cd app && npm run dev")
+				Expect(err).To(BeNil())
+				Expect(scriptName).To(Equal("dev"))
+			})
+
+			It("should extract script name from simple npm run command", func() {
+				scriptName, err := sealights.ExtractNpmRunScriptName("npm run test")
+				Expect(err).To(BeNil())
+				Expect(scriptName).To(Equal("test"))
+			})
+
+			It("should handle commands with hyphens and underscores", func() {
+				scriptName, err := sealights.ExtractNpmRunScriptName("npm run start-prod_env")
+				Expect(err).To(BeNil())
+				Expect(scriptName).To(Equal("start-prod_env"))
+			})
+
+			It("should fail for non-npm commands", func() {
+				_, err := sealights.ExtractNpmRunScriptName("web: node server.js")
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("failed to extract npm script name"))
+			})
+		})
+
+		Context("validateNpmRunScript function", func() {
+			var packageJson map[string]interface{}
+
+			BeforeEach(func() {
+				packageJson = map[string]interface{}{
+					"scripts": map[string]interface{}{
+						"start":    "node server.js",
+						"test":     "mocha",
+						"dev":      "nodemon server.js",
+						"build":    "webpack",
+					},
+				}
+			})
+
+			It("should validate existing script", func() {
+				err := sealights.ValidateNpmRunScript(packageJson, "start")
+				Expect(err).To(BeNil())
+			})
+
+			It("should validate existing custom script", func() {
+				err := sealights.ValidateNpmRunScript(packageJson, "dev")
+				Expect(err).To(BeNil())
+			})
+
+			It("should fail for non-existing script", func() {
+				err := sealights.ValidateNpmRunScript(packageJson, "nonexistent")
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("script 'nonexistent' not found"))
+			})
+
+			It("should fail for package.json without scripts section", func() {
+				packageJsonWithoutScripts := map[string]interface{}{
+					"name": "test-app",
+				}
+				err := sealights.ValidateNpmRunScript(packageJsonWithoutScripts, "start")
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("no scripts section found"))
+			})
+
+			It("should fail for package.json with null scripts section", func() {
+				packageJsonWithNullScripts := map[string]interface{}{
+					"scripts": nil,
+				}
+				err := sealights.ValidateNpmRunScript(packageJsonWithNullScripts, "start")
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("no scripts section found"))
+			})
+		})
+
+		Context("custom npm script support", func() {
+			BeforeEach(func() {
+				err = os.WriteFile(filepath.Join(stager.BuildDir(), procfileName), []byte("web: npm run custom-script"), 0755)
+				Expect(err).To(BeNil())
+				
+				customPackageJson := "{\n    \"scripts\": {\n        \"custom-script\": \"" + originalStartCommand + "\",\n        \"start\": \"node index.js\"\n    }\n}"
+				err = os.WriteFile(filepath.Join(stager.BuildDir(), packageJsonName), []byte(customPackageJson), 0755)
+				Expect(err).To(BeNil())
+
+				os.Setenv("VCAP_SERVICES", `{"user-provided":[
+					{ 
+						"label": "user-provided",
+						"name": "sealights",
+						"credentials": {
+							"token": "`+token+`"
+						}
+					}
+				]}`)
+			})
+
+			AfterEach(func() {
+				os.Remove(filepath.Join(stager.BuildDir(), packageJsonName))
+			})
+
+			It("should inject sealights into custom npm script", func() {
+				err = os.Setenv("SL_LAB_ID", lab)
+				Expect(err).To(BeNil())
+				err = os.Setenv("SL_PROJECT_ROOT", root)
+				Expect(err).To(BeNil())
+				err = os.Setenv("SL_TEST_STAGE", stage)
+				Expect(err).To(BeNil())
+				err = os.Setenv("SL_BUILD_SESSION_ID_FILE", "")
+				Expect(err).NotTo(HaveOccurred())
+
+				err = sealights.SetApplicationStartInProcfile(stager)
+				Expect(err).To(BeNil())
+
+				packageJson, err := sealights.ReadPackageJson(stager)
+				Expect(err).To(BeNil())
+				
+				customScript := packageJson["scripts"].(map[string]interface{})["custom-script"].(string)
+				cleanResult := strings.ReplaceAll(customScript, " ", "")
+				Expect(cleanResult).To(Equal(expected))
+			})
+
+			It("should fallback to start script when custom script doesn't exist", func() {
+				err = os.WriteFile(filepath.Join(stager.BuildDir(), procfileName), []byte("web: npm run nonexistent"), 0755)
+				Expect(err).To(BeNil())
+
+				err = sealights.SetApplicationStartInPackageJson(stager, "nonexistent")
+				Expect(err).To(BeNil())
+
+				packageJson, err := sealights.ReadPackageJson(stager)
+				Expect(err).To(BeNil())
+				
+				startScript := packageJson["scripts"].(map[string]interface{})["start"].(string)
+				Expect(startScript).To(ContainSubstring("slnodejs"))
+			})
+		})
 	})
 })
