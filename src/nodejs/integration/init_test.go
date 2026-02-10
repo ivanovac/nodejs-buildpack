@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,11 +126,19 @@ func TestIntegration(t *testing.T) {
 	Expect(platform.Delete.Execute(proxyName)).To(Succeed())
 	Expect(platform.Delete.Execute(dynatraceName)).To(Succeed())
 	Expect(os.Remove(os.Getenv("BUILDPACK_FILE"))).To(Succeed())
-	Expect(os.Remove(goBuildpackFile)).To(Succeed())
+	if goBuildpackFile != "" && os.Getenv("GO_BUILDPACK_FILE") == "" {
+		Expect(os.Remove(goBuildpackFile)).To(Succeed())
+	}
 	Expect(platform.Deinitialize()).To(Succeed())
 }
 
 func downloadBuildpack(name string) (string, error) {
+	// Check if environment variable is set for this buildpack
+	envVar := fmt.Sprintf("%s_BUILDPACK_FILE", strings.ToUpper(name))
+	if file := os.Getenv(envVar); file != "" {
+		return file, nil
+	}
+
 	uri := fmt.Sprintf("https://github.com/cloudfoundry/%s-buildpack/archive/master.zip", name)
 
 	file, err := os.CreateTemp("", fmt.Sprintf("%s-buildpack-*.zip", name))
