@@ -147,8 +147,8 @@ dependencies:
   source_sha256: 563d2a1b2a5ba5d5409b5ecd05a0e1bf9b028cf3e6a6f0c87a5dc8dc3f2d9182
 - name: python
   version: 3.11.14
-  uri: https://buildpacks.cloudfoundry.org/dependencies/python/python_3.11.14_linux_x64_cflinuxfs4_5d0a9d8b.tgz
-  sha256: 5d0a9d8bcea9ab75ffb927285f4ae79f3a47189a31d4eceac7842ec9131c8146
+  uri: https://github.com/ivanovac/python-buildpack/releases/download/v1.9.0-beta-cflinuxfs5/python_3.11.14_linux_x64_cflinuxfs5.tgz
+  sha256: bed9c33f051f1f06b1be274af0b74dbc2cf131ca9a1bf42af3cd35bb3a8282c9
   cf_stacks:
   - cflinuxfs5
   source: https://www.python.org/ftp/python/3.11.14/Python-3.11.14.tgz
