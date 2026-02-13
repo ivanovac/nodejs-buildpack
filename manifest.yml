@@ -23,6 +23,7 @@ include_files:
 - profile/appdynamics-setup.sh
 - profile/newrelic-setup.sh
 - profile/nodejs.sh
+- scripts/install_go.sh
 dependency_deprecation_dates:
 - version_line: 20.x.x
   name: node
